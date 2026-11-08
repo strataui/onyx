@@ -1,0 +1,30 @@
+[package]
+name = "strata_browser"
+version = "0.1.0"
+edition = "2021"
+authors = ["Strata Contributors"]
+license = "MIT"
+description = "Native Zero-Chromium Web Browser built directly on Strata and Mica"
+repository = "https://github.com/strataui/onyx"
+
+[lib]
+name = "strata_browser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "onyx"
+path = "src/main.rs"
+
+[dependencies]
+strata = { path = "../../../strata/crates/strata", features = ["ui", "icons", "devtools"] }
+strata_dom = { path = "../../../strata/crates/core/strata_dom" }
+strata_macro = { path = "../../../strata/crates/core/strata_macro" }
+strata_ui = { path = "../../../strata/crates/ui/strata_ui" }
+strata_icons = { path = "../../../strata/crates/ui/strata_icons" }
+strata_platform = { path = "../../../strata/crates/render/strata_platform" }
+strata_devtools = { path = "../../../strata/crates/tooling/strata_devtools" }
+strata_web_reader = { path = "../onyx_reader" }
+strata_style = { path = "../../../strata/crates/core/strata_style" }
+strata_render = { path = "../../../strata/crates/render/strata_render" }
+strata_layout = { path = "../../../strata/crates/core/strata_layout" }
+strata_web_api = { path = "../../../strata/crates/runtime/strata_web_api" }

@@ -1,0 +1,16 @@
+[package]
+name = "strata_web_reader"
+version = "0.1.0"
+edition = "2021"
+authors = ["Strata Contributors"]
+license = "MIT"
+description = "High-performance semantic web transpiler and offline article reader for Onyx and Strata"
+repository = "https://github.com/strataui/onyx"
+
+[dependencies]
+strata_primitives = { path = "../../../strata/crates/core/strata_primitives" }
+strata_dom = { path = "../../../strata/crates/core/strata_dom" }
+strata_style = { path = "../../../strata/crates/core/strata_style" }
+strata_layout = { path = "../../../strata/crates/core/strata_layout" }
+strata_storage = { path = "../../../strata/crates/runtime/strata_storage" }
+strata_js = { path = "../../../strata/crates/runtime/strata_js" }
