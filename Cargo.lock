@@ -907,7 +907,6 @@ name = "strata_browser"
 version = "0.1.0"
 dependencies = [
  "libc",
- "onyx_reader",
  "serde",
  "serde_json",
  "strata",

@@ -924,16 +924,55 @@ pub fn run_tab_worker_process_loop() {
             }
         };
 
+        #[cfg(test)]
         if job.simulate_hang {
             std::thread::sleep(Duration::from_secs(3600));
         }
 
+        #[cfg(test)]
         if job.simulate_crash {
             #[cfg(unix)]
             unsafe {
                 libc::raise(libc::SIGSEGV);
             }
             std::process::exit(139);
+        }
+
+        #[cfg(not(test))]
+        if job.simulate_crash {
+            let err_resp = SandboxedResponse {
+                tab_id: job.tab_id,
+                generation: job.generation,
+                url: job.url.clone(),
+                title: "Onyx Tab (Fault)".to_string(),
+                html: String::new(),
+                dom_nodes: Vec::new(),
+                status: 500,
+                is_error: true,
+                is_crashed: true,
+                crash_reason: Some("Sandboxed process fault: simulated crash rejected in production mode".to_string()),
+                elapsed_ms: 0.0,
+                request_entry: NetworkRequestEntry {
+                    name: job.url.clone(),
+                    method: "GET".to_string(),
+                    status: 500,
+                    status_text: "Process Terminated".to_string(),
+                    kind: "document".to_string(),
+                    initiator: "navigation".to_string(),
+                    size_bytes: 0,
+                    time_ms: 0.0,
+                },
+                frame_sequence: 0,
+                shm_slot: None,
+            };
+            if let Ok(line_json) = serde_json::to_string(&err_resp) {
+                let stdout = std::io::stdout();
+                let mut handle = stdout.lock();
+                let _ = writeln!(handle, "{line_json}");
+                let _ = handle.flush();
+            }
+            line.clear();
+            continue;
         }
 
         let t_start = Instant::now();

@@ -24,7 +24,6 @@ strata_icons = { workspace = true }
 strata_platform = { workspace = true }
 strata_devtools = { workspace = true }
 strata_web_reader = { workspace = true }
-onyx_reader = { workspace = true }
 strata_style = { workspace = true }
 strata_render = { workspace = true }
 strata_layout = { workspace = true }
