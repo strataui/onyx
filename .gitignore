@@ -1,5 +1,9 @@
-/target
+target/
+**/target/
+**/target/browser-artifacts/
+**/target/parity_viewport/
 **/*.rs.bk
 *.swp
 *.bak
 .DS_Store
+
