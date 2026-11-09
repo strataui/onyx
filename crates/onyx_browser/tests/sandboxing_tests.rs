@@ -23,7 +23,7 @@ fn test_sandboxed_tab_worker_lifecycle_and_heartbeat() {
 
     match worker.status() {
         ProcessStatus::Running { pid, .. } => {
-            assert_eq!(pid, 50000);
+            assert!(pid > 0, "Worker PID must be authentic non-zero OS identifier");
         }
         other => panic!("Expected Running status, got {:?}", other),
     }

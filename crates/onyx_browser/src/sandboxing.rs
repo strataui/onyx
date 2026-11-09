@@ -1035,7 +1035,10 @@ impl SandboxedTabWorker {
 
         match policy {
             SandboxPolicy::ThreadSandbox => {
-                let pid = 50000 + (worker_id as u32);
+                #[cfg(target_os = "linux")]
+                let pid = unsafe { libc::gettid() as u32 };
+                #[cfg(not(target_os = "linux"))]
+                let pid = std::process::id();
                 Self {
                     worker_id,
                     policy,
@@ -1179,7 +1182,10 @@ impl SandboxedTabWorker {
     pub fn restart(&self) {
         match self.policy {
             SandboxPolicy::ThreadSandbox => {
-                let pid = 50000 + (self.worker_id as u32) + 1000;
+                #[cfg(target_os = "linux")]
+                let pid = unsafe { libc::gettid() as u32 };
+                #[cfg(not(target_os = "linux"))]
+                let pid = std::process::id();
                 let mut st = self.status.write().unwrap();
                 *st = ProcessStatus::Running {
                     pid,
