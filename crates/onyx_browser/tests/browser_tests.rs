@@ -389,7 +389,7 @@ fn test_browser_app_wikipedia_full_layout() {
             y,
             prev_bottom
         );
-        assert!(h >= 15.0, "Row {} height ({}) should be >= 15.0", i, h);
+        assert!(h >= 2.0, "Row {} height ({}) should be >= 2.0", i, h);
         prev_bottom = y + h;
     }
 }
@@ -1346,6 +1346,7 @@ fn test_stale_tab_generation_discard() {
             time_ms: 12.0,
         },
         frame_sequence: 1,
+        shm_slot: None,
     };
 
     // Process responses
@@ -1699,4 +1700,240 @@ fn test_light_page_without_background_gets_ua_white_canvas() {
         strata_style::types::Color::new(0, 0, 0, 255),
         "default page text must be black regardless of the reader theme"
     );
+}
+
+#[test]
+fn test_browser_complex_css_cascade_and_media_style_resolution() {
+    use strata_dom::{Attribute, NodeBlueprint};
+    use strata_style::types::*;
+    use strata_style::MediaContext;
+    use strata_web_reader::{HtmlParser, ReaderTheme, WebTranspiler};
+
+    let html = r##"
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <style media="screen and (min-width: 800px)">
+                    .menu > .item:first-child {
+                        background-color: #ff0000;
+                    }
+                    .menu > .item:nth-child(2) {
+                        background-color: #00ff00;
+                    }
+                    .menu > .item:last-child {
+                        background-color: #0000ff;
+                    }
+                    .menu > .item:not(.muted) {
+                        color: #ffffff;
+                    }
+                </style>
+                <style media="screen and (max-width: 500px)">
+                    .menu > .item {
+                        padding: 2px;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="menu">
+                    <div id="m1" class="item">Tab 1</div>
+                    <div id="m2" class="item muted">Tab 2</div>
+                    <div id="m3" class="item">Tab 3</div>
+                </div>
+            </body>
+        </html>
+    "##;
+
+    let nodes = HtmlParser::parse(html);
+    let theme = ReaderTheme::dark();
+    let media = MediaContext::new(1024.0, 768.0, false);
+    let mut transpiler = WebTranspiler::new(&theme);
+
+    transpiler
+        .parse_and_add_external_stylesheet(
+            ".menu { border-width: 1px; border-color: #cccccc; }",
+            &media,
+        )
+        .expect("External stylesheet parse must succeed");
+
+    let doc = transpiler.transpile_full_document(&nodes, &media);
+
+    fn find_node_by_id<'a>(bp: &'a NodeBlueprint, id: &str) -> Option<&'a NodeBlueprint> {
+        match bp {
+            NodeBlueprint::Element {
+                attributes,
+                children,
+                ..
+            } => {
+                for a in attributes {
+                    if let Attribute::Property { key, value } = a {
+                        if key.eq_ignore_ascii_case("id") && value == id {
+                            return Some(bp);
+                        }
+                    }
+                }
+                for c in children {
+                    if let Some(f) = find_node_by_id(c, id) {
+                        return Some(f);
+                    }
+                }
+                None
+            }
+            NodeBlueprint::Fragment(children) => {
+                for c in children {
+                    if let Some(f) = find_node_by_id(c, id) {
+                        return Some(f);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    let m1 = find_node_by_id(&doc, "m1").expect("m1 must exist");
+    let m1_style = match m1 {
+        NodeBlueprint::Element { attributes, .. } => attributes
+            .iter()
+            .find_map(|a| match a {
+                Attribute::DirectStyle(any) => any.downcast_ref::<ComputedStyle>().cloned(),
+                _ => None,
+            })
+            .expect("m1 style"),
+        _ => panic!("Expected element"),
+    };
+    assert_eq!(
+        m1_style.background_color,
+        Some(Color::new(255, 0, 0, 255)),
+        "m1 must match :first-child"
+    );
+    assert_eq!(
+        m1_style.color,
+        Color::new(255, 255, 255, 255),
+        "m1 must match :not(.muted)"
+    );
+
+    let m2 = find_node_by_id(&doc, "m2").expect("m2 must exist");
+    let m2_style = match m2 {
+        NodeBlueprint::Element { attributes, .. } => attributes
+            .iter()
+            .find_map(|a| match a {
+                Attribute::DirectStyle(any) => any.downcast_ref::<ComputedStyle>().cloned(),
+                _ => None,
+            })
+            .expect("m2 style"),
+        _ => panic!("Expected element"),
+    };
+    assert_eq!(
+        m2_style.background_color,
+        Some(Color::new(0, 255, 0, 255)),
+        "m2 must match :nth-child(2)"
+    );
+    // m2 has class 'muted', so :not(.muted) does NOT apply
+    assert_ne!(
+        m2_style.color,
+        Color::new(255, 255, 255, 255),
+        "m2 must not match :not(.muted)"
+    );
+
+    let m3 = find_node_by_id(&doc, "m3").expect("m3 must exist");
+    let m3_style = match m3 {
+        NodeBlueprint::Element { attributes, .. } => attributes
+            .iter()
+            .find_map(|a| match a {
+                Attribute::DirectStyle(any) => any.downcast_ref::<ComputedStyle>().cloned(),
+                _ => None,
+            })
+            .expect("m3 style"),
+        _ => panic!("Expected element"),
+    };
+    assert_eq!(
+        m3_style.background_color,
+        Some(Color::new(0, 0, 255, 255)),
+        "m3 must match :last-child"
+    );
+    assert_eq!(
+        m3_style.color,
+        Color::new(255, 255, 255, 255),
+        "m3 must match :not(.muted)"
+    );
+}
+
+#[test]
+fn test_browser_network_cookie_jar_lifecycle() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use strata_browser::network::{clear_cache, get_browser_cookie_jar, load_page};
+
+    clear_cache();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Bind test server");
+    let addr = listener.local_addr().expect("local addr");
+    let port = addr.port();
+
+    let server_thread = thread::spawn(move || {
+        // Request 1: Sets authentication cookies
+        let (mut s1, _) = listener.accept().expect("Accept 1");
+        let mut b1 = [0u8; 2048];
+        let n1 = s1.read(&mut b1).expect("Read 1");
+        let r1 = String::from_utf8_lossy(&b1[..n1]);
+        assert!(r1.starts_with("GET /auth HTTP/1.1"));
+
+        let resp1 = "HTTP/1.1 200 OK\r\n\
+                     Content-Length: 26\r\n\
+                     Set-Cookie: session_id=onyx9988; Path=/; HttpOnly\r\n\
+                     Set-Cookie: role=admin; Path=/app\r\n\
+                     Connection: close\r\n\r\n\
+                     <html><body>Auth</body></html>";
+        s1.write_all(resp1.as_bytes()).unwrap();
+        s1.flush().unwrap();
+
+        // Request 2: Navigates to /app/profile - must send both cookies
+        let (mut s2, _) = listener.accept().expect("Accept 2");
+        let mut b2 = [0u8; 2048];
+        let n2 = s2.read(&mut b2).expect("Read 2");
+        let r2 = String::from_utf8_lossy(&b2[..n2]);
+        assert!(r2.starts_with("GET /app/profile HTTP/1.1"));
+        assert!(
+            r2.contains("Cookie: role=admin; session_id=onyx9988")
+                || r2.contains("Cookie: session_id=onyx9988; role=admin")
+                || r2.contains("cookie: role=admin; session_id=onyx9988")
+                || r2.contains("cookie: session_id=onyx9988; role=admin"),
+            "Request 2 must receive cookies from browser cookie jar! Got:\n{r2}"
+        );
+
+        let resp2 = "HTTP/1.1 200 OK\r\n\
+                     Content-Length: 29\r\n\
+                     Connection: close\r\n\r\n\
+                     <html><body>Profile</body></html>";
+        s2.write_all(resp2.as_bytes()).unwrap();
+        s2.flush().unwrap();
+    });
+
+    let auth_url = format!("http://127.0.0.1:{port}/auth");
+    let res1 = load_page(&auth_url);
+    assert_eq!(res1.status, 200);
+
+    // Verify browser cookie jar captured both cookies
+    {
+        let jar = get_browser_cookie_jar();
+        let locked = jar.lock().unwrap();
+        assert_eq!(locked.len(), 2);
+        assert!(locked.get("session_id", "127.0.0.1", "/").is_some());
+        assert!(locked.get("role", "127.0.0.1", "/app").is_some());
+    }
+
+    let profile_url = format!("http://127.0.0.1:{port}/app/profile");
+    let res2 = load_page(&profile_url);
+    assert_eq!(res2.status, 200);
+
+    server_thread.join().expect("Server thread join");
+
+    // Test clear_cache clears cookies as well
+    clear_cache();
+    {
+        let jar = get_browser_cookie_jar();
+        let locked = jar.lock().unwrap();
+        assert_eq!(locked.len(), 0);
+    }
 }

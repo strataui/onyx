@@ -11,6 +11,14 @@ use strata_browser::components::BrowserApp;
 use strata_browser::state::BrowserState;
 
 fn main() {
+    // Check if running as sandboxed tab worker child process
+    if std::env::var("STRATA_TAB_WORKER").is_ok()
+        || std::env::args().any(|a| a == "--tab-worker" || a == "strata_tab_worker_process_entrypoint")
+    {
+        strata_browser::sandboxing::run_tab_worker_process_loop();
+        return;
+    }
+
     println!("[*] Starting Strata Native Web Browser GUI Application...");
 
     let state = BrowserState::new();

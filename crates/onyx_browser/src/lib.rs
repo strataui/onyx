@@ -6,6 +6,7 @@
 #![allow(non_snake_case, dead_code, unused_variables, unused_imports)]
 
 pub mod components;
+pub mod dom_router;
 pub mod network;
 pub mod perf;
 pub mod sandboxing;
@@ -13,6 +14,7 @@ pub mod state;
 pub mod tab_worker;
 
 pub use components::{BrowserApp, GoogleNewTab, StatusBar, TabBar, Toolbar, Viewport};
+pub use dom_router::{DomHitTestRouter, W3cMouseEvent};
 pub use network::{load_page, normalize_target, PageLoadResult};
 pub use sandboxing::{
     ProcessStatus, SandboxPolicy, SandboxedJob, SandboxedResponse, SandboxedTabPool,
@@ -20,3 +22,4 @@ pub use sandboxing::{
 };
 pub use state::{BookmarkItem, BrowserState, BrowserTab, ContextTarget};
 pub use tab_worker::{TabWorkerJob, TabWorkerPool, TabWorkerResponse};
+pub use strata_js::{self, JsEngine, JsValue};

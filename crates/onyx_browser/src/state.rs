@@ -1,10 +1,13 @@
 use crate::network::{load_page, normalize_target};
 use strata::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
+use strata_js::{JsEngine, JsValue};
 use strata_web_reader::ast::SemanticNode;
 
 /// Represents an individual browser tab with full history and rendered document state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct BrowserTab {
     pub id: usize,
     pub title: String,
@@ -13,29 +16,265 @@ pub struct BrowserTab {
     pub history_index: usize,
     pub is_loading: bool,
     pub html_content: String,
-    /// Semantic DOM tree produced by the background tab worker; empty when unknown.
+    /// Semantic DOM tree produced by the background tab worker or JS engine; empty when unknown.
     pub dom_nodes: Arc<Vec<SemanticNode>>,
     pub generation: u64,
     pub is_crashed: bool,
     pub crash_reason: Option<String>,
+    /// Active ECMAScript execution runtime bound to this tab's DOM tree.
+    pub js_engine: Rc<RefCell<JsEngine>>,
+    /// Active Content Security Policy for the loaded document.
+    pub csp: Option<strata_web_reader::ContentSecurityPolicy>,
+}
+
+impl PartialEq for BrowserTab {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.title == other.title
+            && self.url == other.url
+            && self.history == other.history
+            && self.history_index == other.history_index
+            && self.is_loading == other.is_loading
+            && self.html_content == other.html_content
+            && self.dom_nodes == other.dom_nodes
+            && self.generation == other.generation
+            && self.is_crashed == other.is_crashed
+            && self.crash_reason == other.crash_reason
+            && self.csp == other.csp
+            && Rc::ptr_eq(&self.js_engine, &other.js_engine)
+    }
+}
+
+impl std::fmt::Debug for BrowserTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserTab")
+            .field("id", &self.id)
+            .field("title", &self.title)
+            .field("url", &self.url)
+            .field("history", &self.history)
+            .field("history_index", &self.history_index)
+            .field("is_loading", &self.is_loading)
+            .field("html_content_len", &self.html_content.len())
+            .field("dom_nodes_len", &self.dom_nodes.len())
+            .field("generation", &self.generation)
+            .field("is_crashed", &self.is_crashed)
+            .field("crash_reason", &self.crash_reason)
+            .field("has_csp", &self.csp.is_some())
+            .finish()
+    }
+}
+
+/// Evaluates inline and external `<script>` bundles in document order with CSP validation.
+fn execute_page_scripts(
+    engine: &mut JsEngine,
+    base_url: &str,
+    html: &str,
+    csp: Option<&strata_web_reader::ContentSecurityPolicy>,
+) {
+    let script_descriptors = strata_web_reader::extract_script_descriptors(html);
+    let page_origin = crate::network::extract_url_origin(base_url)
+        .unwrap_or_else(|| base_url.to_string());
+
+    for desc in script_descriptors {
+        match desc {
+            strata_web_reader::ScriptDescriptor::Inline { code, nonce, .. } => {
+                let allowed = csp
+                    .map(|c| c.allows_script_inline(&code, nonce.as_deref()))
+                    .unwrap_or(true);
+                if allowed {
+                    let _ = engine.eval(&code);
+                }
+            }
+            strata_web_reader::ScriptDescriptor::External { src, nonce, .. } => {
+                let abs_url = crate::network::resolve_relative_url(base_url, &src)
+                    .unwrap_or_else(|| src.clone());
+                let allowed = csp
+                    .map(|c| c.allows_script_url(&page_origin, &abs_url, nonce.as_deref()))
+                    .unwrap_or(true);
+                if allowed {
+                    if let Some(script_code) = crate::network::fetch_external_script(&abs_url) {
+                        let _ = engine.eval(&script_code);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl BrowserTab {
     pub fn new(id: usize, url: &str) -> Self {
         let result = load_page(url);
+        let base_nodes = strata_web_reader::HtmlParser::parse(&result.html);
+        let doc = strata_web_reader::semantic_nodes_to_document(&base_nodes);
+        if !result.title.is_empty() {
+            *doc.title.borrow_mut() = result.title.clone();
+        }
+        let mut engine = JsEngine::with_document(doc);
+
+        let csp = strata_web_reader::extract_meta_csp(&result.html);
+        execute_page_scripts(&mut engine, url, &result.html, csp.as_ref());
+
+        let doc_nodes = strata_web_reader::document_to_semantic_nodes(&engine.document);
+        let (final_nodes, final_html, final_title) = if engine.document.has_mutated() {
+            let h = engine.document.to_html();
+            let t = engine.document.title.borrow().clone();
+            let title = if !t.is_empty() && t != "Strata Document" {
+                t
+            } else {
+                result.title
+            };
+            (Arc::new(doc_nodes), h, title)
+        } else {
+            (Arc::new(doc_nodes), result.html, result.title)
+        };
+
         Self {
             id,
-            title: result.title,
+            title: final_title,
             url: url.to_string(),
             history: vec![url.to_string()],
             history_index: 0,
             is_loading: false,
-            html_content: result.html,
-            dom_nodes: Arc::new(Vec::new()),
+            html_content: final_html,
+            dom_nodes: final_nodes,
             generation: 0,
             is_crashed: false,
             crash_reason: None,
+            js_engine: Rc::new(RefCell::new(engine)),
+            csp,
         }
+    }
+
+    /// Evaluates a JavaScript snippet in the tab's execution context.
+    /// If the script mutates the document DOM, `dom_nodes`, `html_content`, and `generation`
+    /// are automatically updated, and true is returned indicating the DOM mutated.
+    pub fn eval_js(&mut self, script: &str) -> Result<(JsValue, bool), String> {
+        if let Some(ref csp) = self.csp {
+            if !csp.allows_eval() {
+                return Err("Content Security Policy violation: eval() is forbidden by script-src".to_string());
+            }
+        }
+
+        let (val, mutated) = {
+            let mut engine = self.js_engine.borrow_mut();
+            let val = engine.eval(script)?;
+            let mutated = engine.document.has_mutated();
+            (val, mutated)
+        };
+
+        if mutated {
+            self.sync_from_engine();
+            Ok((val, true))
+        } else {
+            Ok((val, false))
+        }
+    }
+
+    /// Evaluates a JavaScript snippet and immediately hydrates mutations into the active AppRuntime.
+    pub fn eval_js_with_runtime(
+        &mut self,
+        script: &str,
+        runtime: &mut strata::AppRuntime,
+    ) -> Result<(JsValue, bool), String> {
+        if let Some(ref csp) = self.csp {
+            if !csp.allows_eval() {
+                return Err("Content Security Policy violation: eval() is forbidden by script-src".to_string());
+            }
+        }
+
+        let (val, mutated) = {
+            let mut engine = self.js_engine.borrow_mut();
+            let val = engine.eval(script)?;
+            let mutated = engine.document.has_mutated();
+            (val, mutated)
+        };
+
+        if mutated {
+            let hydrated = self.hydrate_mutations_into_runtime(runtime);
+            if !hydrated {
+                self.sync_from_engine();
+            }
+            Ok((val, true))
+        } else {
+            Ok((val, false))
+        }
+    }
+
+    /// Attaches an AppRuntime's mutation channel sender so that client-side JS mutations
+    /// immediately flow into the live presentation tree.
+    pub fn attach_runtime_mutation_channel(
+        &self,
+        sender: std::sync::mpsc::Sender<strata_js::DomMutationRecord>,
+    ) {
+        self.js_engine.borrow().document.set_mutation_channel(sender);
+    }
+
+    /// Drains recent fine-grained DOM mutation records from the tab's JavaScript document.
+    pub fn drain_mutations(&self) -> Vec<strata_js::DomMutationRecord> {
+        self.js_engine.borrow().document.drain_mutations()
+    }
+
+    /// Hydrates any pending DOM mutations into the given AppRuntime without re-transpiling the page.
+    /// Returns true if any mutations were hydrated and incremental relayout was triggered.
+    pub fn hydrate_mutations_into_runtime(&mut self, runtime: &mut strata::AppRuntime) -> bool {
+        let mutations = self.drain_mutations();
+        if mutations.is_empty() {
+            return false;
+        }
+        let engine = self.js_engine.borrow();
+        let hydrated = runtime.hydrate_dom_mutations(&mutations, Some(&engine.document));
+        drop(engine);
+        if hydrated {
+            self.generation += 1;
+        }
+        hydrated
+    }
+
+    /// Synchronizes `dom_nodes`, `html_content`, and `title` from the tab's `js_engine`.
+    pub fn sync_from_engine(&mut self) {
+        let engine = self.js_engine.borrow();
+        let new_nodes = strata_web_reader::document_to_semantic_nodes(&engine.document);
+        let new_html = engine.document.to_html();
+        let doc_title = engine.document.title.borrow().clone();
+        if !doc_title.is_empty() && doc_title != "Strata Document" {
+            self.title = doc_title;
+        }
+        self.dom_nodes = Arc::new(new_nodes);
+        self.html_content = new_html;
+        self.generation += 1;
+    }
+
+    /// Synchronizes the tab's `js_engine` with fresh HTML content or semantic DOM nodes
+    /// (for instance when a navigation completes or worker response arrives).
+    pub fn update_content(&mut self, html: String, dom_nodes: Vec<SemanticNode>, title: String) {
+        self.title = title.clone();
+        let base_nodes = if dom_nodes.is_empty() {
+            strata_web_reader::HtmlParser::parse(&html)
+        } else {
+            dom_nodes
+        };
+        let doc = strata_web_reader::semantic_nodes_to_document(&base_nodes);
+        if !title.is_empty() {
+            *doc.title.borrow_mut() = title;
+        }
+        let mut engine = JsEngine::with_document(doc);
+
+        let csp = strata_web_reader::extract_meta_csp(&html);
+        execute_page_scripts(&mut engine, &self.url, &html, csp.as_ref());
+        self.csp = csp;
+
+        let doc_nodes = strata_web_reader::document_to_semantic_nodes(&engine.document);
+        self.dom_nodes = Arc::new(doc_nodes);
+        if engine.document.has_mutated() {
+            self.html_content = engine.document.to_html();
+            let doc_title = engine.document.title.borrow().clone();
+            if !doc_title.is_empty() && doc_title != "Strata Document" {
+                self.title = doc_title;
+            }
+        } else {
+            self.html_content = html;
+        }
+        self.js_engine = Rc::new(RefCell::new(engine));
     }
 }
 
@@ -80,7 +319,7 @@ pub struct ConsoleLogEntry {
 }
 
 /// DevTools network request waterfall item
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NetworkRequestEntry {
     pub name: String,
     pub method: String,
@@ -525,13 +764,11 @@ impl BrowserState {
                         if resp.is_crashed {
                             tab.is_crashed = true;
                             tab.crash_reason = resp.crash_reason.clone();
-                            tab.title = format!("Aw, Snap! - {}", tab.url);
+                            tab.title = format!("Onyx Tab (Crash) - {}", tab.url);
                         } else {
                             tab.is_crashed = false;
                             tab.crash_reason = None;
-                            tab.title = resp.title.clone();
-                            tab.html_content = resp.html;
-                            tab.dom_nodes = Arc::new(resp.dom_nodes);
+                            tab.update_content(resp.html, resp.dom_nodes, resp.title.clone());
                         }
                         changed = true;
                     }
@@ -625,9 +862,15 @@ impl BrowserState {
                         if tab.generation == resp.generation {
                             matched = true;
                             tab.is_loading = false;
-                            tab.title = resp.title.clone();
-                            tab.html_content = resp.html;
-                            tab.dom_nodes = Arc::new(resp.dom_nodes);
+                            tab.is_crashed = resp.is_crashed;
+                            tab.crash_reason = resp.crash_reason.clone();
+                            if !resp.is_crashed {
+                                tab.update_content(resp.html, resp.dom_nodes, resp.title.clone());
+                            } else {
+                                tab.title = resp.title.clone();
+                                tab.html_content = resp.html;
+                                tab.dom_nodes = Arc::new(Vec::new());
+                            }
                         }
                     }
                 });
@@ -669,6 +912,8 @@ impl BrowserState {
                 generation: 1,
                 is_crashed: false,
                 crash_reason: None,
+                js_engine: Rc::new(RefCell::new(JsEngine::new())),
+                csp: None,
             }
         };
 
@@ -922,10 +1167,8 @@ impl BrowserState {
                 if let Some(tab) = tabs.iter_mut().find(|t| t.id == active_id) {
                     tab.generation += 1;
                     tab.url = normalized.clone();
-                    tab.title = result.title;
-                    tab.html_content = result.html;
-                    tab.dom_nodes = Arc::new(Vec::new());
                     tab.is_loading = false;
+                    tab.update_content(result.html, Vec::new(), result.title);
 
                     if tab.history_index + 1 < tab.history.len() {
                         tab.history.truncate(tab.history_index + 1);
@@ -944,10 +1187,8 @@ impl BrowserState {
                 if let Some(tab) = tabs.iter_mut().find(|t| t.id == active_id) {
                     tab.generation += 1;
                     tab.url = normalized.clone();
-                    tab.title = cached.title;
-                    tab.html_content = cached.html;
-                    tab.dom_nodes = Arc::new(Vec::new());
                     tab.is_loading = false;
+                    tab.update_content(cached.html, Vec::new(), cached.title);
 
                     if tab.history_index + 1 < tab.history.len() {
                         tab.history.truncate(tab.history_index + 1);
@@ -1248,8 +1489,108 @@ impl BrowserState {
             self.reload();
             self.add_console_log(LogLevel::Info, "repl", "Tab reloaded");
         } else {
-            self.add_console_log(LogLevel::Info, "repl", &format!("Result: {trimmed} => OK"));
+            // Evaluate script dynamically in the active tab's JsEngine
+            match self.eval_js_in_active_tab(trimmed) {
+                Ok(js_val) => {
+                    // Extract any pending console.log calls produced during evaluation
+                    let logs = {
+                        if let Some(tab) = self.active_tab() {
+                            let mut engine = tab.js_engine.borrow_mut();
+                            let drained: Vec<String> = std::mem::take(&mut engine.console_logs);
+                            drained
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    for log in logs {
+                        self.add_console_log(LogLevel::Info, "console", &log);
+                    }
+                    self.add_console_log(LogLevel::Info, "repl", &format!("{js_val}"));
+                }
+                Err(err) => {
+                    self.add_console_log(LogLevel::Error, "repl", &format!("Uncaught {err}"));
+                }
+            }
         }
         self.devtools_console_input.set(String::new());
+    }
+
+    /// Evaluates a JavaScript snippet in the active tab's runtime, updating the tab reactively if mutated.
+    pub fn eval_js_in_active_tab(&self, script: &str) -> Result<JsValue, String> {
+        let active_id = self.active_tab_id.get();
+        self.eval_js_in_tab(active_id, script)
+    }
+
+    /// Evaluates a JavaScript snippet in the specified tab's runtime, updating the tab reactively if mutated.
+    pub fn eval_js_in_tab(&self, tab_id: usize, script: &str) -> Result<JsValue, String> {
+        let mut eval_res = Err(format!("Tab {tab_id} not found"));
+
+        self.tabs.update(|tabs| {
+            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                match tab.eval_js(script) {
+                    Ok((val, _mutated)) => {
+                        eval_res = Ok(val);
+                    }
+                    Err(e) => {
+                        eval_res = Err(e);
+                    }
+                }
+            }
+        });
+
+        eval_res
+    }
+
+    /// Dispatches a click event at (x, y) coordinates into the active tab's DOM tree.
+    pub fn dispatch_click_in_active_tab(&self, x: f32, y: f32) -> bool {
+        let active_id = self.active_tab_id.get();
+        self.dispatch_click_in_tab(active_id, x, y)
+    }
+
+    /// Dispatches a click event at (x, y) coordinates into the specified tab's DOM tree.
+    pub fn dispatch_click_in_tab(&self, tab_id: usize, x: f32, y: f32) -> bool {
+        let mut mutated = false;
+        self.tabs.update(|tabs| {
+            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                mutated = crate::dom_router::DomHitTestRouter::dispatch_click(tab, x, y);
+            }
+        });
+        mutated
+    }
+
+    /// Dispatches a W3C MouseEvent into the active tab's DOM tree.
+    pub fn dispatch_mouse_event_in_active_tab(&self, event: &crate::dom_router::W3cMouseEvent) -> bool {
+        let active_id = self.active_tab_id.get();
+        let mut mutated = false;
+        self.tabs.update(|tabs| {
+            if let Some(tab) = tabs.iter_mut().find(|t| t.id == active_id) {
+                mutated = crate::dom_router::DomHitTestRouter::dispatch_mouse_event(tab, event);
+            }
+        });
+        mutated
+    }
+
+    /// Dispatches an input event into the active tab's DOM tree.
+    pub fn dispatch_input_in_active_tab(&self, selector: &str, value: &str) -> bool {
+        let active_id = self.active_tab_id.get();
+        let mut mutated = false;
+        self.tabs.update(|tabs| {
+            if let Some(tab) = tabs.iter_mut().find(|t| t.id == active_id) {
+                mutated = crate::dom_router::DomHitTestRouter::dispatch_input(tab, selector, value);
+            }
+        });
+        mutated
+    }
+
+    /// Dispatches a form submission into the active tab's DOM tree.
+    pub fn dispatch_submit_in_active_tab(&self, selector: Option<&str>) -> bool {
+        let active_id = self.active_tab_id.get();
+        let mut mutated = false;
+        self.tabs.update(|tabs| {
+            if let Some(tab) = tabs.iter_mut().find(|t| t.id == active_id) {
+                mutated = crate::dom_router::DomHitTestRouter::dispatch_submit(tab, selector);
+            }
+        });
+        mutated
     }
 }

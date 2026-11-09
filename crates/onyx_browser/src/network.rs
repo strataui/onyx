@@ -4,10 +4,21 @@
 //! true HTML extraction, and standard Chromium-grade network error pages.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use strata_web_api::CookieJar;
 
 static PAGE_CACHE: Mutex<Option<HashMap<String, PageLoadResult>>> = Mutex::new(None);
 static STYLESHEET_CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static SCRIPT_CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static BROWSER_COOKIE_JAR: Mutex<Option<Arc<Mutex<CookieJar>>>> = Mutex::new(None);
+
+/// Returns the global browser cookie jar conforming to RFC 6265.
+pub fn get_browser_cookie_jar() -> Arc<Mutex<CookieJar>> {
+    let mut guard = BROWSER_COOKIE_JAR.lock().unwrap();
+    guard
+        .get_or_insert_with(|| Arc::new(Mutex::new(CookieJar::new())))
+        .clone()
+}
 
 /// Invalidates a specific URL from the in-memory page cache.
 pub fn invalidate_cache(url: &str) {
@@ -18,7 +29,7 @@ pub fn invalidate_cache(url: &str) {
     }
 }
 
-/// Clears all entries from the in-memory page and stylesheet caches.
+/// Clears all entries from the in-memory page, stylesheet, and cookie caches.
 pub fn clear_cache() {
     let mut guard = PAGE_CACHE.lock().unwrap();
     if let Some(ref mut cache) = *guard {
@@ -27,6 +38,14 @@ pub fn clear_cache() {
     let mut s_guard = STYLESHEET_CACHE.lock().unwrap();
     if let Some(ref mut cache) = *s_guard {
         cache.clear();
+    }
+    let mut script_guard = SCRIPT_CACHE.lock().unwrap();
+    if let Some(ref mut cache) = *script_guard {
+        cache.clear();
+    }
+    let c_guard = BROWSER_COOKIE_JAR.lock().unwrap();
+    if let Some(ref jar) = *c_guard {
+        jar.lock().unwrap().clear();
     }
 }
 
@@ -154,8 +173,7 @@ pub fn load_page(url: &str) -> PageLoadResult {
 }
 
 fn decode_data_url(data: &str) -> String {
-    let replaced = data.replace('+', " ");
-    let bytes = replaced.as_bytes();
+    let bytes = data.as_bytes();
     let mut result = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
@@ -174,7 +192,7 @@ fn decode_data_url(data: &str) -> String {
     String::from_utf8_lossy(&result).into_owned()
 }
 
-fn resolve_relative_url(base: &str, relative: &str) -> Option<String> {
+pub fn resolve_relative_url(base: &str, relative: &str) -> Option<String> {
     let rel_trimmed = relative.trim();
     if rel_trimmed.is_empty() {
         return None;
@@ -209,6 +227,76 @@ fn resolve_relative_url(base: &str, relative: &str) -> Option<String> {
     }
 }
 
+/// Helper to extract page origin (scheme + host + port).
+pub fn extract_url_origin(url: &str) -> Option<String> {
+    if url.starts_with("data:") || url.starts_with("about:") {
+        return Some(url.to_string());
+    }
+    if let Some(idx) = url.find("://") {
+        let scheme = &url[..idx];
+        let rest = &url[idx + 3..];
+        let host = match rest.find('/') {
+            Some(s) => &rest[..s],
+            None => rest,
+        };
+        Some(format!("{scheme}://{host}"))
+    } else {
+        None
+    }
+}
+
+/// Pre-populates the in-memory script cache (e.g. for deterministic integration testing).
+pub fn register_script_cache(url: &str, content: &str) {
+    let mut guard = SCRIPT_CACHE.lock().unwrap();
+    let cache = guard.get_or_insert_with(HashMap::new);
+    cache.insert(url.to_string(), content.to_string());
+}
+
+/// Fetches external script text from a URL or cache.
+pub fn fetch_external_script(url: &str) -> Option<String> {
+    if url.starts_with("data:text/javascript,") || url.starts_with("data:application/javascript,") {
+        let comma_idx = url.find(',')?;
+        return Some(decode_data_url(&url[comma_idx + 1..]));
+    }
+
+    {
+        let guard = SCRIPT_CACHE.lock().unwrap();
+        if let Some(ref cache) = *guard {
+            if let Some(text) = cache.get(url) {
+                return Some(text.clone());
+            }
+        }
+    }
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return None;
+    }
+
+    let mut headers = strata_web_api::Headers::new();
+    headers.set("User-Agent", "Mozilla/5.0 (compatible; Onyx/1.0; +https://strataui.org)");
+    headers.set("Accept", "*/*");
+
+    let init = strata_web_api::RequestInit {
+        method: "GET".to_string(),
+        headers,
+        timeout_ms: Some(6000),
+        cookie_jar: Some(get_browser_cookie_jar()),
+        ..Default::default()
+    };
+
+    if let Ok(resp) = strata_web_api::fetch(url, Some(init)) {
+        if resp.status == 200 {
+            if let Ok(text) = resp.text() {
+                let mut guard = SCRIPT_CACHE.lock().unwrap();
+                let cache = guard.get_or_insert_with(HashMap::new);
+                cache.insert(url.to_string(), text.clone());
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
 /// Automatically downloads external linked stylesheets and inlines them into <style> tags within HTML.
 fn inline_linked_stylesheets(base_url: &str, mut html: String) -> String {
     let nodes = strata_web_reader::HtmlParser::parse(&html);
@@ -233,7 +321,7 @@ fn inline_linked_stylesheets(base_url: &str, mut html: String) -> String {
                 let mut headers = strata_web_api::Headers::new();
                 headers.set(
                     "User-Agent",
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Strata/0.1.0",
+                    "Mozilla/5.0 (compatible; Onyx/1.0; +https://strataui.org)",
                 );
                 headers.set("Accept", "text/css,*/*;q=0.1");
 
@@ -241,6 +329,7 @@ fn inline_linked_stylesheets(base_url: &str, mut html: String) -> String {
                     method: "GET".to_string(),
                     headers,
                     timeout_ms: Some(6000),
+                    cookie_jar: Some(get_browser_cookie_jar()),
                     ..Default::default()
                 };
 
@@ -303,13 +392,14 @@ fn fetch_live_web_page(url: &str) -> PageLoadResult {
         rest_headers.set("Accept-Language", "en-US,en;q=0.9");
         rest_headers.set(
             "User-Agent",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Strata/0.1.0",
+            "Mozilla/5.0 (compatible; Onyx/1.0; +https://strataui.org)",
         );
 
         let rest_init = strata_web_api::RequestInit {
             method: "GET".to_string(),
             headers: rest_headers,
             timeout_ms: Some(8000),
+            cookie_jar: Some(get_browser_cookie_jar()),
             ..Default::default()
         };
 
@@ -341,13 +431,14 @@ fn fetch_live_web_page(url: &str) -> PageLoadResult {
     headers.set("Accept-Language", "en-US,en;q=0.9");
     headers.set(
         "User-Agent",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Strata/0.1.0",
+        "Mozilla/5.0 (compatible; Onyx/1.0; +https://strataui.org)",
     );
 
     let init = strata_web_api::RequestInit {
         method: "GET".to_string(),
         headers,
         timeout_ms: Some(8000),
+        cookie_jar: Some(get_browser_cookie_jar()),
         ..Default::default()
     };
 

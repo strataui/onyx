@@ -56,7 +56,7 @@ pub fn Viewport(state: BrowserState) -> View {
                     <div class="w-16 h-16 rounded-full bg-[#f38ba8]/10 border border-[#f38ba8]/30 flex items-center justify-center mb-6">
                         <span class="text-2xl font-mono font-bold text-[#f38ba8]">!</span>
                     </div>
-                    <h2 class="text-xl font-bold text-[#cdd6f4] mb-2">Aw, Snap!</h2>
+                    <h2 class="text-xl font-bold text-[#cdd6f4] mb-2">Tab Crashed</h2>
                     <p class="text-sm text-[#a6adc8] mb-4">Something went wrong while displaying this webpage.</p>
                     <div class="w-full bg-[#11111b] border border-[#313244] rounded-lg p-3 text-xs font-mono text-[#f38ba8] mb-6 text-left overflow-x-auto">
                         <span class="text-[#6c7086]">Error: </span>
@@ -92,7 +92,10 @@ pub fn Viewport(state: BrowserState) -> View {
     };
 
     let html_hash = compute_html_hash(&tab.html_content);
-    let cache_key = (theme_mode.clone(), html_hash);
+    let cache_key = (
+        theme_mode.clone(),
+        html_hash ^ (tab.generation.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
+    );
 
     let (document_blueprint, _dom_nodes_count) = BLUEPRINT_CACHE.with(|c| {
         let mut map = c.borrow_mut();
@@ -166,11 +169,18 @@ pub fn Viewport(state: BrowserState) -> View {
     }
 
     let page_ctx_state = state.clone();
+    let page_click_state = state.clone();
 
     rsx! {
         <div
             id={format!("browser-viewport-tab-{}", tab.id)}
             class={format!("flex-1 flex flex-col min-h-0 w-full overflow-y-auto {}", bg_color)}
+            onclick={move |e: Event| {
+                page_click_state.dispatch_click_in_active_tab(
+                    e.offset_x as f32,
+                    e.offset_y as f32,
+                );
+            }}
             oncontextmenu={move |e: Event| {
                 page_ctx_state.open_context_menu_for(
                     e.client_x as f32,

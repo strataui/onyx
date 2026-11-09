@@ -11,3 +11,22 @@ edition = "2021"
 authors = ["Strata Contributors"]
 license = "MIT"
 repository = "https://github.com/strataui/onyx"
+
+[workspace.dependencies]
+onyx_reader = { path = "crates/onyx_reader" }
+strata = { git = "https://github.com/strataui/strata.git", features = ["ui", "icons", "devtools"] }
+strata_dom = { git = "https://github.com/strataui/strata.git" }
+strata_macro = { git = "https://github.com/strataui/strata.git" }
+strata_ui = { git = "https://github.com/strataui/strata.git" }
+strata_icons = { git = "https://github.com/strataui/strata.git" }
+strata_platform = { git = "https://github.com/strataui/strata.git" }
+strata_devtools = { git = "https://github.com/strataui/strata.git" }
+strata_web_reader = { git = "https://github.com/strataui/strata.git" }
+strata_style = { git = "https://github.com/strataui/strata.git" }
+strata_render = { git = "https://github.com/strataui/strata.git" }
+strata_layout = { git = "https://github.com/strataui/strata.git" }
+strata_web_api = { git = "https://github.com/strataui/strata.git" }
+strata_js = { git = "https://github.com/strataui/strata.git" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"

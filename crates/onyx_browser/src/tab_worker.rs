@@ -76,6 +76,7 @@ pub struct TabWorkerResponse {
     pub elapsed_ms: f32,
     pub request_entry: NetworkRequestEntry,
     pub frame_sequence: u64,
+    pub shm_slot: Option<usize>,
 }
 
 impl From<SandboxedResponse> for TabWorkerResponse {
@@ -94,6 +95,7 @@ impl From<SandboxedResponse> for TabWorkerResponse {
             elapsed_ms: resp.elapsed_ms,
             request_entry: resp.request_entry,
             frame_sequence: resp.frame_sequence,
+            shm_slot: resp.shm_slot,
         }
     }
 }
@@ -162,6 +164,17 @@ impl TabWorkerPool {
             .workers()
             .get(worker_idx)
             .map(|w| Arc::clone(&w.ring_buffer))
+    }
+
+    /// Retrieves the cross-process shared memory ring buffer for a specific worker if running under process isolation.
+    pub fn get_cross_process_shm(
+        &self,
+        worker_idx: usize,
+    ) -> Option<Arc<crate::sandboxing::CrossProcessShmRingBuffer>> {
+        self.inner
+            .workers()
+            .get(worker_idx)
+            .and_then(|w| w.cross_process_shm.clone())
     }
 
     /// Triggers an intentional worker crash for test verification of fault containment.
