@@ -1431,6 +1431,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "strata-audio"
+version = "0.2.0"
+
+[[package]]
 name = "strata-browser-example"
 version = "0.1.0"
 dependencies = [
@@ -1563,6 +1567,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strata-a11y",
+ "strata-audio",
  "strata-device",
  "strata-dom",
  "strata-gpu-path",
