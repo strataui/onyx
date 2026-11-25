@@ -1,0 +1,27 @@
+[package]
+name = "strata-web-reader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "High-performance semantic HTML5 web transpiler, CSP engine, and offline article reader for Strata and Onyx"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+strata-primitives = { workspace = true }
+strata-dom = { workspace = true }
+strata-style = { workspace = true }
+strata-storage = { workspace = true }
+strata-js = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+strata-ui = { workspace = true }
+strata-macro = { workspace = true }
+strata-layout = { workspace = true }
+strata-render = { workspace = true }
+strata-web-api = { workspace = true }

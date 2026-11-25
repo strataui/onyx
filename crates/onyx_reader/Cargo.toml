@@ -1,11 +1,19 @@
 [package]
-name = "onyx_reader"
+name = "onyx-reader"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "High-performance semantic web transpiler and offline article reader for Onyx (powered by strata_web_reader)"
+description = "High-performance semantic web transpiler and offline article reader for Onyx (powered by strata-web-reader)"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/onyx-reader"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "onyx_reader"
+path = "src/lib.rs"
 
 [dependencies]
-strata_web_reader = { workspace = true }
+strata-web-reader = { workspace = true }

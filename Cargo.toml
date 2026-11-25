@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/strata_web_reader",
     "crates/onyx_reader",
     "crates/onyx_browser",
+    "examples/strata_browser",
 ]
 
 [workspace.package]
@@ -11,22 +13,32 @@ edition = "2021"
 authors = ["Strata Contributors"]
 license = "MIT"
 repository = "https://github.com/strataui/onyx"
+homepage = "https://github.com/strataui/onyx"
+documentation = "https://docs.rs/strata-web-reader"
+keywords = ["browser", "html", "reader", "web", "strata"]
+categories = ["web-programming", "gui"]
 
 [workspace.dependencies]
-onyx_reader = { path = "crates/onyx_reader" }
-strata = { git = "https://github.com/strataui/strata.git", features = ["ui", "icons", "devtools"] }
-strata_dom = { git = "https://github.com/strataui/strata.git" }
-strata_macro = { git = "https://github.com/strataui/strata.git" }
-strata_ui = { git = "https://github.com/strataui/strata.git" }
-strata_icons = { git = "https://github.com/strataui/strata.git" }
-strata_platform = { git = "https://github.com/strataui/strata.git" }
-strata_devtools = { git = "https://github.com/strataui/strata.git" }
-strata_web_reader = { git = "https://github.com/strataui/strata.git" }
-strata_style = { git = "https://github.com/strataui/strata.git" }
-strata_render = { git = "https://github.com/strataui/strata.git" }
-strata_layout = { git = "https://github.com/strataui/strata.git" }
-strata_web_api = { git = "https://github.com/strataui/strata.git" }
-strata_js = { git = "https://github.com/strataui/strata.git" }
+strata-web-reader = { path = "crates/strata_web_reader", version = "0.1.0" }
+onyx-reader = { path = "crates/onyx_reader", version = "0.1.0" }
+
+strata-ui = "0.1.4"
+strata-primitives = "0.1.0"
+strata-dom = "0.1.2"
+strata-macro = "0.1.2"
+strata-style = "0.1.0"
+strata-layout = "0.1.0"
+strata-render = "0.1.2"
+strata-ui-platform = "0.1.2"
+strata-storage = "0.1.0"
+strata-web-api = "0.1.0"
+strata-devtools = "0.1.0"
+strata-js = "0.1.0"
+strata-components = "0.1.2"
+strata-icons = "0.1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 libc = "0.2"
+
+[profile.dev]
+opt-level = 1

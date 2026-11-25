@@ -828,14 +828,46 @@ fn test_render_input_caret_visual_png() {
     let mut runtime = strata::AppRuntime::new(app_view, 1280.0, 800.0, 1.0);
     runtime.layout_root.compute_layout(1280.0, 800.0);
 
-    // Hit test input to get exact content box
+    // Locate omnibox input bounds and verify hit_test_input finds it
+    fn find_input_rect(
+        bp: &strata_dom::NodeBlueprint,
+        ln: &strata_layout::LayoutNode,
+        target_id: &str,
+    ) -> Option<strata_layout::Rect> {
+        if let strata_dom::NodeBlueprint::Element { attributes, children, .. } = bp {
+            if attributes.iter().any(|a| {
+                matches!(a, strata_dom::Attribute::Property { key, value } if key == "id" && value == target_id)
+            }) {
+                return Some(ln.geometry.border_box);
+            }
+            for (c_bp, c_ln) in children.iter().zip(ln.children.iter()) {
+                if let Some(r) = find_input_rect(c_bp, c_ln, target_id) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+    let omnibox_box = find_input_rect(&runtime.root_blueprint, &runtime.layout_root, "omnibox-input")
+        .expect("omnibox-input element must exist in layout tree");
+    assert!(
+        omnibox_box.width > 50.0 && omnibox_box.height > 10.0,
+        "omnibox-input must have non-zero geometry, got {:?}",
+        omnibox_box
+    );
     let input = strata::AppRuntime::hit_test_input(
         &runtime.root_blueprint,
         &runtime.layout_root,
-        300.0,
-        60.0,
+        omnibox_box.x + 20.0,
+        omnibox_box.y + omnibox_box.height * 0.5,
     );
-    assert!(input.is_some(), "Omnibox input must be found");
+    assert!(
+        input.is_some(),
+        "Omnibox input must be found at ({}, {}), box={:?}",
+        omnibox_box.x + 20.0,
+        omnibox_box.y + omnibox_box.height * 0.5,
+        omnibox_box
+    );
     let target = input.unwrap();
 
     // Click at the exact end of the text

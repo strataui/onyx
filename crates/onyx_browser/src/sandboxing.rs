@@ -924,7 +924,7 @@ pub fn run_tab_worker_process_loop() {
             }
         };
 
-        #[cfg(test)]
+        #[cfg(any(test, debug_assertions))]
         if job.simulate_hang {
             std::thread::sleep(Duration::from_secs(3600));
         }

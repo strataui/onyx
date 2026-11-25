@@ -1,0 +1,28 @@
+[package]
+name = "strata-browser-example"
+version.workspace = true
+publish = false
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native Zero-Chromium Web Browser Harness Example written in Strata"
+
+[lib]
+name = "strata_browser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strata-browser-example"
+path = "src/main.rs"
+
+[dependencies]
+strata-ui = { workspace = true }
+strata-dom = { workspace = true }
+strata-macro = { workspace = true }
+strata-components = { workspace = true }
+strata-icons = { workspace = true }
+strata-ui-platform = { workspace = true }
+strata-web-reader = { workspace = true }
+strata-style = { workspace = true }
+strata-render = { workspace = true }
+strata-layout = { workspace = true }
